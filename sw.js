@@ -1,5 +1,5 @@
 // OSL -> PEK Fare Watch — offline cache (flat paths)
-const CACHE = "farewatch-v3";
+const CACHE = "farewatch-v4";
 const ASSETS = [
   "./",
   "./index.html",

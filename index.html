@@ -339,7 +339,12 @@
   function renderLive(data){
     elLiveCard.style.display = "block";
     var target = data.target_nok || state.threshold || 6000;
+    var offers = data.offers || [];
+    // Always determine the cheapest from the offers list, independent of target.
     var cheapest = data.cheapest;
+    if(!cheapest && offers.length){
+      cheapest = offers.slice().sort(function(a,b){ return a.price-b.price; })[0];
+    }
     var when = (data.checked_at||"").replace("T"," ").slice(0,16);
     elLiveMeta.textContent = data.origin + "→" + data.dest + " · checked " + when;
 
@@ -347,23 +352,39 @@
       elLiveFare.className = "fare none"; elLiveFare.textContent = "no offers";
       elLiveBadge.innerHTML = "";
     }else{
+      // The cheapest fare is ALWAYS shown, whatever the target is.
       var good = cheapest.price < target;
       elLiveFare.className = "fare " + (good?"good":"over");
       elLiveFare.innerHTML = money(cheapest.price) + " <span class='unit'>kr</span>";
-      elLiveBadge.innerHTML = good
+      // Badge shows how it compares to target, but never hides the price.
+      var cmp = good
         ? "<span class='badge good'>Below target by " + money(target-cheapest.price) + " kr</span>"
         : "<span class='badge over'>" + money(cheapest.price-target) + " kr over target</span>";
+      var detail =
+        "<div class='sub' style='margin-top:8px'>Cheapest: " +
+        (cheapest.carriers && cheapest.carriers!=="-" ? cheapest.carriers : "airline n/a") +
+        " · " + (cheapest.stops!=null ? cheapest.stops : "?") + " stop" +
+        " · " + (cheapest.depart||"") + "→" + (cheapest["return"]||"") +
+        (cheapest.quote_age_min!=null ? " · quote " + cheapest.quote_age_min + " min old" : "") +
+        "</div>";
+      elLiveBadge.innerHTML = cmp + detail;
     }
 
-    // list all offers
+    // list all offers (each with full detail)
     elLiveList.innerHTML = "";
-    (data.offers||[]).forEach(function(o){
+    if(!offers.length){
+      var li0 = document.createElement("li");
+      li0.innerHTML = "<span class='n' style='color:var(--muted)'>No individual offers returned.</span>";
+      elLiveList.appendChild(li0);
+    }
+    offers.slice().sort(function(a,b){ return a.price-b.price; }).forEach(function(o){
       var good = o.price < target;
+      var carrier = (o.carriers && o.carriers!=="-") ? o.carriers : "airline n/a";
       var li = document.createElement("li");
       li.innerHTML =
-        "<span class='d'>"+o.depart+"→"+o["return"]+"</span>"+
+        "<span class='d'>"+(o.depart||"")+"→"+(o["return"]||"")+"</span>"+
         "<span class='p "+(good?"good":"over")+"'>"+money(o.price)+"</span>"+
-        "<span class='n'>"+(o.carriers||"")+" · "+o.stops+" stop</span>";
+        "<span class='n'>"+carrier+" · "+(o.stops!=null?o.stops:"?")+" stop</span>";
       elLiveList.appendChild(li);
     });
   }
