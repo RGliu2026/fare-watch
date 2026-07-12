@@ -1,5 +1,5 @@
 // OSL -> PEK Fare Watch — offline cache (flat paths)
-const CACHE = "farewatch-v2";
+const CACHE = "farewatch-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -23,5 +23,10 @@ self.addEventListener("activate", (e) => {
 });
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  // Only handle requests for our own app files (same origin).
+  // Never intercept cross-origin calls (e.g. the Cloudflare Worker API),
+  // or POST/preflight — let those go straight to the network.
+  const url = new URL(e.request.url);
+  if (url.origin !== self.location.origin) return;
   e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));
 });
