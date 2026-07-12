@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#0E1A2B">
 <title>OSL → PEK Fare Watch</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icons/favicon.png">
-<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
@@ -136,18 +136,33 @@
     <div id="badge" style="display:none"></div>
   </div>
 
-  <!-- Watch settings -->
+  <!-- LIVE fare search -->
   <div class="card">
-    <h2>Your deal rule</h2>
-    <p class="hint">Alert-worthy when a round-trip fare drops below your target.</p>
+    <h2>Check live fares</h2>
+    <p class="hint">Pick your exact dates and target, then fetch a live OSL→PEK round-trip fare.</p>
+    <div class="row">
+      <label class="fld"><span class="k">Departure</span>
+        <input id="departDate" type="date"></label>
+      <label class="fld"><span class="k">Return</span>
+        <input id="returnDate" type="date"></label>
+    </div>
     <div class="row">
       <label class="fld"><span class="k">Target (kr)</span>
         <input id="threshold" type="number" inputmode="numeric" min="0" step="100" value="6000"></label>
-      <label class="fld"><span class="k">Travel from</span>
-        <input id="depFrom" type="date"></label>
-      <label class="fld"><span class="k">Travel to</span>
-        <input id="depTo" type="date"></label>
     </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn-amber btn-full" id="checkBtn">Check fares now</button>
+    </div>
+    <div id="status" class="sub" style="margin-top:10px;display:none"></div>
+  </div>
+
+  <!-- LIVE result -->
+  <div class="card" id="liveCard" style="display:none">
+    <h2>Latest live fare</h2>
+    <p class="hint" id="liveMeta">—</p>
+    <div id="liveFare" class="fare none" style="font-size:40px;text-align:center;margin:6px 0">—</div>
+    <div id="liveBadge" style="text-align:center"></div>
+    <ul id="liveList" class="log" style="margin-top:14px"></ul>
   </div>
 
   <!-- Chart -->
@@ -204,6 +219,13 @@
 <script>
 (function(){
   "use strict";
+
+  // ====== CONFIG ======
+  // Paste your deployed Cloudflare Worker URL here (no trailing slash), e.g.
+  //   https://farewatch-worker.yourname.workers.dev
+  var WORKER_URL = "https://farewatch-worker.liurg999.workers.dev";
+  // ====================
+
   var KEY = "oslpek.v1";
   var state = load();
 
@@ -218,21 +240,140 @@
     try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
   }
 
+  // ---------- LIVE fare search via the Worker ----------
+  function money(n){ return Math.round(n).toLocaleString("nb-NO"); }
+  var elCheck, elStatus, elLiveCard, elLiveFare, elLiveMeta, elLiveBadge, elLiveList;
+
+  function setStatus(msg, show){
+    if(!elStatus) return;
+    elStatus.textContent = msg || "";
+    elStatus.style.display = show ? "block" : "none";
+  }
+
+  function initLive(){
+    elCheck    = document.getElementById("checkBtn");
+    elStatus   = document.getElementById("status");
+    elLiveCard = document.getElementById("liveCard");
+    elLiveFare = document.getElementById("liveFare");
+    elLiveMeta = document.getElementById("liveMeta");
+    elLiveBadge= document.getElementById("liveBadge");
+    elLiveList = document.getElementById("liveList");
+
+    var dEl = document.getElementById("departDate");
+    var rEl = document.getElementById("returnDate");
+    var tEl = document.getElementById("threshold");
+    // prefill from saved state
+    if(state.departDate) dEl.value = state.departDate;
+    if(state.returnDate) rEl.value = state.returnDate;
+    tEl.value = state.threshold || 6000;
+
+    dEl.addEventListener("change", function(){ state.departDate=dEl.value; save(); });
+    rEl.addEventListener("change", function(){ state.returnDate=rEl.value; save(); });
+    tEl.addEventListener("input",  function(){ state.threshold=Number(tEl.value)||0; save(); });
+
+    elCheck.addEventListener("click", onCheck);
+
+    // Try to show any existing result on load
+    loadResult(false);
+  }
+
+  function onCheck(){
+    var depart = document.getElementById("departDate").value;
+    var ret    = document.getElementById("returnDate").value;
+    var target = Number(document.getElementById("threshold").value)||6000;
+    if(!depart || !ret){ setStatus("Pick both departure and return dates.", true); return; }
+    if(WORKER_URL.indexOf("PASTE_YOUR") === 0){
+      setStatus("Set WORKER_URL in the app code first.", true); return;
+    }
+
+    elCheck.disabled = true;
+    setStatus("Starting fare check…", true);
+
+    fetch(WORKER_URL + "/trigger", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ depart:depart, "return":ret, target:String(target) })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if(res && res.ok){
+        setStatus("Checking live fares… this takes ~30–60s. Fetching result…", true);
+        // poll for the fresh result a few times
+        pollResult(0);
+      }else{
+        setStatus("Could not start: " + (res && (res.detail||res.error) || "unknown"), true);
+        elCheck.disabled = false;
+      }
+    })
+    .catch(function(e){ setStatus("Error: " + e, true); elCheck.disabled=false; });
+  }
+
+  function pollResult(n){
+    if(n > 12){ // ~ up to ~2 min
+      setStatus("Still running. Tap ‘Check fares now’ again in a moment to load the result.", true);
+      elCheck.disabled = false; return;
+    }
+    setTimeout(function(){
+      loadResult(true).then(function(updated){
+        if(updated){ setStatus("", false); elCheck.disabled=false; }
+        else { pollResult(n+1); }
+      });
+    }, 10000);
+  }
+
+  var lastCheckedAt = null;
+  function loadResult(expectFresh){
+    if(WORKER_URL.indexOf("PASTE_YOUR") === 0) return Promise.resolve(false);
+    return fetch(WORKER_URL + "/result", { cache:"no-store" })
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        if(!data || !data.checked_at) return false;
+        if(expectFresh && data.checked_at === lastCheckedAt) return false;
+        lastCheckedAt = data.checked_at;
+        renderLive(data);
+        return true;
+      })
+      .catch(function(){ return false; });
+  }
+
+  function renderLive(data){
+    elLiveCard.style.display = "block";
+    var target = data.target_nok || state.threshold || 6000;
+    var cheapest = data.cheapest;
+    var when = (data.checked_at||"").replace("T"," ").slice(0,16);
+    elLiveMeta.textContent = data.origin + "→" + data.dest + " · checked " + when;
+
+    if(!cheapest){
+      elLiveFare.className = "fare none"; elLiveFare.textContent = "no offers";
+      elLiveBadge.innerHTML = "";
+    }else{
+      var good = cheapest.price < target;
+      elLiveFare.className = "fare " + (good?"good":"over");
+      elLiveFare.innerHTML = money(cheapest.price) + " <span class='unit'>kr</span>";
+      elLiveBadge.innerHTML = good
+        ? "<span class='badge good'>Below target by " + money(target-cheapest.price) + " kr</span>"
+        : "<span class='badge over'>" + money(cheapest.price-target) + " kr over target</span>";
+    }
+
+    // list all offers
+    elLiveList.innerHTML = "";
+    (data.offers||[]).forEach(function(o){
+      var good = o.price < target;
+      var li = document.createElement("li");
+      li.innerHTML =
+        "<span class='d'>"+o.depart+"→"+o["return"]+"</span>"+
+        "<span class='p "+(good?"good":"over")+"'>"+money(o.price)+"</span>"+
+        "<span class='n'>"+(o.carriers||"")+" · "+o.stops+" stop</span>";
+      elLiveList.appendChild(li);
+    });
+  }
+
   var $ = function(id){ return document.getElementById(id); };
   function fmt(n){ return Math.round(n).toLocaleString("nb-NO"); }
   function today(){ return new Date().toISOString().slice(0,10); }
 
   // ---- init controls ----
-  $("threshold").value = state.threshold || 6000;
-  $("depFrom").value = state.depFrom || "";
-  $("depTo").value = state.depTo || "";
   $("entryDate").value = today();
-
-  $("threshold").addEventListener("input", function(){
-    state.threshold = Number(this.value)||0; save(); render();
-  });
-  $("depFrom").addEventListener("change", function(){ state.depFrom=this.value; save(); });
-  $("depTo").addEventListener("change", function(){ state.depTo=this.value; save(); });
 
   $("addBtn").addEventListener("click", function(){
     var d = $("entryDate").value || today();
@@ -260,9 +401,6 @@
         var obj = JSON.parse(r.result);
         if(obj && Array.isArray(obj.entries)){
           state = obj;
-          $("threshold").value = state.threshold||6000;
-          $("depFrom").value = state.depFrom||"";
-          $("depTo").value = state.depTo||"";
           save(); render();
         }
       }catch(err){ alert("Could not read that file."); }
@@ -393,8 +531,8 @@
   }
 
   render();
+  initLive();
 
-  // ---- PWA install prompt ----
   var deferred=null;
   window.addEventListener("beforeinstallprompt", function(e){
     e.preventDefault(); deferred=e;
